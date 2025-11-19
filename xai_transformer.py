@@ -1,14 +1,14 @@
+# Imports
 from torch import nn
 import torch
 import sys
 import copy
 root_dir = './../'
 sys.path.append(root_dir)
-from utils import LayerNorm
+from utils import LayerNorm # this is used for the custom LayerNormImp class
 
-
+# LN arguments for various forms of testing
 class LNargs(object):
-    
     def __init__(self):
         self.lnv = 'nowb'
         self.sigma = None
@@ -18,19 +18,20 @@ class LNargs(object):
         self.mean_detach = False
         self.std_detach = False
 
+# this is the config for LRP-LN rule within the paper
 class LNargsDetach(object):
-    
     def __init__(self):
         self.lnv = 'nowb'
         self.sigma = None
         self.hidden = None
         self.adanorm_scale = 1.
         self.nowb_scale = None
+        # these parameters are now True
         self.mean_detach = True
         self.std_detach = True
         
+# Detaches std but not mean
 class LNargsDetachNotMean(object):
-    
     def __init__(self):
         self.lnv = 'nowb'
         self.sigma = None
@@ -39,15 +40,19 @@ class LNargsDetachNotMean(object):
         self.nowb_scale = None
         self.mean_detach = False
         self.std_detach = True
-       
+
+# ----------------------------------------------------------------------------
+# does not seem relevant
+
 def make_p_layer(layer, gamma):
     player = copy.deepcopy(layer)
     player.weight = torch.nn.Parameter(layer.weight+gamma*layer.weight.clamp(min=0))
     player.bias   = torch.nn.Parameter(layer.bias +gamma*layer.bias.clamp(min=0))
     return player
-        
-    
-    
+
+# ----------------------------------------------------------------------------
+            
+# Bert's pooling layer 
 class BertPooler(nn.Module):
     def __init__(self, config):
         super().__init__()
@@ -56,12 +61,13 @@ class BertPooler(nn.Module):
 
     def forward(self, hidden_states):
         # We "pool" the model by simply taking the hidden state corresponding
-        # to the first token.
+        # to the first token. ## --> this is often times the [CLS] token
         self.first_token_tensor = hidden_states[:, 0]
         self.pooled_output1 = self.dense(self.first_token_tensor)
         self.pooled_output2 = self.activation(self.pooled_output1)
         return self.pooled_output2
-        
+
+
 class BertSelfOutput(nn.Module):
     def __init__(self, config):
         super().__init__()
@@ -69,9 +75,9 @@ class BertSelfOutput(nn.Module):
         self.config = config
         
         if self.config.train_mode == True:
-            self.dropout =  torch.nn.Dropout(p=0.1, inplace=False)
+            self.dropout = torch.nn.Dropout(p=0.1, inplace=False)
 
-        
+        # choose which LN to use based on the config
         if config.detach_layernorm == True:
             assert config.train_mode==False
 
@@ -89,13 +95,16 @@ class BertSelfOutput(nn.Module):
         self.detach = config.detach_layernorm
 
     def forward(self, hidden_states, input_tensor):
-        hidden_states = self.dense(hidden_states)                
+        hidden_states = self.dense(hidden_states)
+
         if self.config.train_mode == True:
             hidden_states = self.dropout(hidden_states)
+        
         hidden_states = self.LayerNorm(hidden_states + input_tensor) 
 
         return hidden_states
     
+    # this function is used within the explanation mode
     def pforward(self, hidden_states, input_tensor, gamma):
         pdense =  make_p_layer(self.dense, gamma)
         hidden_states = pdense(hidden_states)                        
@@ -108,15 +117,18 @@ class BertSelfOutput(nn.Module):
 
 
 class AttentionBlock(nn.Module):
-    
     def __init__(self, config):
         super().__init__()
         self.config = config
+
+        # Q, K, V
         self.query = nn.Linear(config.hidden_size, config.all_head_size)
         self.key = nn.Linear(config.hidden_size, config.all_head_size)
         self.value = nn.Linear(config.hidden_size, config.all_head_size)
+
         self.output = BertSelfOutput(config)
-        self.detach = config.detach_kq 
+        self.detach = config.detach_kq
+
         if self.config.train_mode == True:
             self.dropout =  torch.nn.Dropout(p=0.1, inplace=False)
 
@@ -124,7 +136,6 @@ class AttentionBlock(nn.Module):
             assert self.config.train_mode==False
             print('Detach K-Q-softmax branch')
 
-        
 
     def save_attn_gradients(self, attn_gradients):
         self.attn_gradients = attn_gradients
@@ -154,7 +165,6 @@ class AttentionBlock(nn.Module):
     def forward(self, hidden_states, gamma=0 , method=None):
         
       #  print('PKQ gamma', gamma)
-
         pquery = make_p_layer(self.query, gamma)
         pkey = make_p_layer(self.key, gamma)
         pvalue = make_p_layer(self.value, gamma)
@@ -166,6 +176,8 @@ class AttentionBlock(nn.Module):
             query_ = self.query(hidden_states) 
             key_ = self.key(hidden_states) 
             val_ = self.value(hidden_states)
+
+
         else:
             query_ = self.pproc(self.query, pquery, hidden_states) 
             key_ = self.pproc(self.key, pkey, hidden_states)
@@ -184,17 +196,19 @@ class AttentionBlock(nn.Module):
         #if torch.isnan(attention_scores).any():
         #    import pdb;pdb.set_trace()
 
-
+        # main step (do not allow gradient flows, hence GI not a problem)
         if self.detach:
             assert self.config.train_mode==False
-
             attention_probs = nn.Softmax(dim=-1)(attention_scores).detach()
+        
         else:
             attention_probs = nn.Softmax(dim=-1)(attention_scores)
 
         
         if self.config.train_mode:
             attention_probs = self.dropout(attention_probs)
+
+        # GNN based (can skip for now)
         if method == 'GAE':
             attention_probs.register_hook(self.save_attn_gradients)
 
@@ -292,6 +306,8 @@ class BertAttention(nn.Module):
         x.requires_grad_(True) 
         return x
     
+
+    # V. imp
     def forward_and_explain(self, input_ids, 
                                   cl,
                                   attention_mask=None,
@@ -305,7 +321,7 @@ class BertAttention(nn.Module):
 
             
         # Forward
-    
+        # dictionary used to store the entire backward pass
         A = {}
         
         hidden_states= self.embeds(input_ids=input_ids, 
@@ -325,7 +341,7 @@ class BertAttention(nn.Module):
             attn_inputdata.requires_grad_(True) 
                         
         
-            A['attn_input_{}_data'.format(i)] =attn_inputdata
+            A['attn_input_{}_data'.format(i)] = attn_inputdata
             A['attn_input_{}'.format(i)] = attn_input
             
             
