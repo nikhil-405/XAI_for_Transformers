@@ -40,20 +40,7 @@ class LNargsDetachNotMean(object):
         self.nowb_scale = None
         self.mean_detach = False
         self.std_detach = True
-
-# Detaches std but not mean
-class LNargsInterpolatedDetach(object):
-    def __init__(self):
-        self.lnv = 'nowb'
-        self.sigma = None
-        self.hidden = None
-        self.adanorm_scale = 1.
-        self.nowb_scale = None
-        self.mean_detach = True
-        self.std_detach = True
-        self.gamma_AH = 0.0
-        self.gamma_LN = 0.0
-        
+ 
 # ----------------------------------------------------------------------------
 # does not seem relevant
 
