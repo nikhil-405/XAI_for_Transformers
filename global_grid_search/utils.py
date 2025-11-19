@@ -36,6 +36,7 @@ class LayerNormImpl(nn.Module):
         self.nowb_scale = args.nowb_scale # None
         self.mean_detach = args.mean_detach # False
         self.std_detach = args.std_detach # False
+        self.gamma_LN = args.gamma_LN if hasattr(args, "gamma_LN") else 0.0
 
         # prolly never go into this case, meaning elementwise_affine stays True
         if self.mode == 'no_norm':
@@ -106,15 +107,21 @@ class LayerNormImpl(nn.Module):
             # get mean, standard_deviation 
 
             # mean is now separate from the computation graph
-            if self.mean_detach:
-                mean = mean.detach()
+            # if self.mean_detach:
+            #     mean = mean.detach()
         
-            # std is now separate from the computation graph
-            if self.std_detach:
-                std = std.detach()
+            # # std is now separate from the computation graph
+            # if self.std_detach:
+            #     std = std.detach()
 
             # the above two segments make LayerNorm locally linear wrt x (ie, (x - const1)/const2)
 
+            # implementing the gamma GI flow
+            gamma = self.gamma_LN
+            print("DEBUG: gamma_LN inside LN =", self.gamma_LN)
+            mean = (1 - gamma)*mean.detach() +  gamma*mean
+            std = (1 - gamma)*std.detach() +  gamma*std
+            
             input_norm = (input - mean) / (std + self.eps)
             return input_norm
 

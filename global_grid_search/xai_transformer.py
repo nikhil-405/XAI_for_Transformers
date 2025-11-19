@@ -43,7 +43,7 @@ class LNargsDetachNotMean(object):
 
 # Detaches std but not mean
 class LNargsInterpolatedDetach(object):
-    def __init__(self):
+    def __init__(self, gamma_LN = 0.0):
         self.lnv = 'nowb'
         self.sigma = None
         self.hidden = None
@@ -51,9 +51,7 @@ class LNargsInterpolatedDetach(object):
         self.nowb_scale = None
         self.mean_detach = True
         self.std_detach = True
-        self.gamma_AH = 0.0
-        self.gamma_LN = 0.0
-        
+        self.gamma_LN = gamma_LN
 # ----------------------------------------------------------------------------
 # does not seem relevant
 
@@ -91,17 +89,18 @@ class BertSelfOutput(nn.Module):
             self.dropout = torch.nn.Dropout(p=0.1, inplace=False)
 
         # choose which LN to use based on the config
-        if config.detach_layernorm == True:
-            assert config.train_mode==False
+        # if config.detach_layernorm == True:
+        #     assert config.train_mode==False
 
-            if config.detach_mean==False:
-                print('Detach LayerNorm only Norm')
-                largs = LNargsDetachNotMean()
-            else:
-                print('Detach LayerNorm Mean+Norm')
-                largs = LNargsDetach()
-        else:
-            largs =  LNargs()
+        #     if config.detach_mean==False:
+        #         print('Detach LayerNorm only Norm')
+        #         largs = LNargsDetachNotMean()
+        #     else:
+        #         print('Detach LayerNorm Mean+Norm')
+        #         largs = LNargsDetach()
+        # else:
+        #     largs =  LNargs()
+        largs = LNargsInterpolatedDetach(gamma_LN = config.gamma_LN)
         
         self.LayerNorm = LayerNorm(config.hidden_size, eps=config.layer_norm_eps, args=largs)
                 
@@ -119,13 +118,10 @@ class BertSelfOutput(nn.Module):
     
     # this function is used within the explanation mode
     def pforward(self, hidden_states, input_tensor, gamma):
-        pdense =  make_p_layer(self.dense, gamma)
-        hidden_states = pdense(hidden_states)                        
-        #hidden_states = self.dense(hidden_states)                
-        if self.config.train_mode == True:
+        hidden_states = self.dense(hidden_states)
+        if self.config.train_mode:
             hidden_states = self.dropout(hidden_states)
-        hidden_states = self.LayerNorm(hidden_states + input_tensor) 
-
+        hidden_states = self.LayerNorm(hidden_states + input_tensor)
         return hidden_states
 
 
@@ -175,28 +171,26 @@ class AttentionBlock(nn.Module):
         return zp * (z / zp).data
         
         
-    def forward(self, hidden_states, gamma=0 , method=None):
+    def forward(self, hidden_states, method=None):
         
       #  print('PKQ gamma', gamma)
-        pquery = make_p_layer(self.query, gamma)
-        pkey = make_p_layer(self.key, gamma)
-        pvalue = make_p_layer(self.value, gamma)
+        # pquery = make_p_layer(self.query, gamma)
+        # pkey = make_p_layer(self.key, gamma)
+        # pvalue = make_p_layer(self.value, gamma)
         
         n_nodes= hidden_states.shape[1]         
 
         
-        if self.config.train_mode:
-            query_ = self.query(hidden_states) 
-            key_ = self.key(hidden_states) 
-            val_ = self.value(hidden_states)
+        # if self.config.train_mode:
+        #     query_ = self.query(hidden_states) 
+        #     key_ = self.key(hidden_states) 
+        #     val_ = self.value(hidden_states)
 
 
-        else:
-            query_ = self.pproc(self.query, pquery, hidden_states) 
-            key_ = self.pproc(self.key, pkey, hidden_states)
-            val_ = self.pproc(self.value, pvalue, hidden_states)
-
-        
+        # else:
+        query_ = self.query(hidden_states)
+        key_   = self.key(hidden_states)
+        val_   = self.value(hidden_states)
 
         # [1, senlen, 768] -> [1, 12, senlen, 64]
         query_t = self.transpose_for_scores(query_)
@@ -210,13 +204,19 @@ class AttentionBlock(nn.Module):
         #    import pdb;pdb.set_trace()
 
         # main step (do not allow gradient flows, hence GI not a problem)
-        if self.detach:
-            assert self.config.train_mode==False
-            attention_probs = nn.Softmax(dim=-1)(attention_scores).detach()
+        # if self.detach:
+        #     assert self.config.train_mode==False
+        #     attention_probs = nn.Softmax(dim=-1)(attention_scores).detach()
         
-        else:
-            attention_probs = nn.Softmax(dim=-1)(attention_scores)
+        # else:
+        #     attention_probs = nn.Softmax(dim=-1)(attention_scores)
 
+        # Introducing gamma parameter
+        attn = torch.nn.functional.softmax(attention_scores, dim=-1)
+        gamma = self.config.gamma_AH
+        print("DEBUG: gamma_AH inside attention =", self.config.gamma_AH)
+
+        attention_probs = (1 - gamma) * attn.detach() + gamma * attn
         
         if self.config.train_mode:
             attention_probs = self.dropout(attention_probs)
@@ -237,7 +237,7 @@ class AttentionBlock(nn.Module):
         else:
           # 
           #  print('Out gamma', gamma)
-            output = self.output.pforward(context_layer, hidden_states, gamma=gamma)
+            output = self.output(context_layer, hidden_states)
 
 
         return output, attention_probs #, (attention_scores, hidden_states) #, query_t, key_t, val_t)
@@ -329,7 +329,6 @@ class BertAttention(nn.Module):
                                   inputs_embeds=None, 
                                   labels=None,
                                   past_key_values_length=0,
-                                  gammas=None,
                                   method=None):
 
             
@@ -358,10 +357,7 @@ class BertAttention(nn.Module):
             A['attn_input_{}'.format(i)] = attn_input
             
             
-            gamma = 0. if gammas is None else gammas[i]
-          #  print('using gamma', gamma)
-            
-            output, attention_probs = block(A['attn_input_{}_data'.format(i)], gamma=gamma, method=method)
+            output, attention_probs = block(A['attn_input_{}_data'.format(i)], method=method)
 
             self.attention_probs[i] = attention_probs
             attn_input = output
