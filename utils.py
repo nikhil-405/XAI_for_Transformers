@@ -110,7 +110,7 @@ class LayerNormImpl(nn.Module):
                     gamma = gamma_LN_override.to(mean.device).view(()).type_as(mean)  # 0-d tensor
                 else:
                     gamma = torch.tensor(float(gamma_LN_override), device=mean.device, dtype=mean.dtype)
-                print(f"LN override!!, gamma = {gamma.data}")
+                # print(f"LN override!!, gamma = {gamma.data}")
                 mean = (1.0 - gamma)*mean.detach() + gamma*mean
                 std = (1.0 - gamma)*std.detach() + gamma*std
 
