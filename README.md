@@ -9,6 +9,16 @@ Our work introduces **Interpolated Conservative Propagation**, a generalization 
 
 ---
 
+
+# Presentation  
+A detailed presentation walking through the high-level overview and theoretical contributions can be found here:
+
+[View Presentation PDF](src/Theoretical%20Overview%20and%20presentation.pdf)
+
+Alternatively, you can also view the slides on [Canva](https://www.canva.com/design/DAG5aimzPOU/MuIAkAPRCUYjrR8rdKgcXg/edit?utm_content=DAG5aimzPOU&utm_campaign=designshare&utm_medium=link2&utm_source=sharebutton).
+
+---
+
 # 📌 Overview
 
 Transformer explainability methods often face a trade-off:
